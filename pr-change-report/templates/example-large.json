@@ -1,0 +1,721 @@
+{
+ "title": "리뷰 적립금 새벽 배치 일괄 처리",
+ "lead": "`review_reward_task` 가 리뷰마다 하던 적립금 지급을 회원마다 한 번으로 묶습니다. 이벤트 기간에 배치가 9분 걸리고 DB CPU가 90% 이상 올라 바꿨습니다.",
+ "kpis": [
+  {
+   "label": "배치 1회 쿼리 수",
+   "value": "18,240 → 152",
+   "note": "로컬 벤치마크, 합성 데이터"
+  },
+  {
+   "label": "배치 1회 시간",
+   "value": "21.4초 → 0.92초",
+   "note": "로컬 벤치마크, 합성 데이터"
+  }
+ ],
+ "sections": [
+  {
+   "heading": "배치가 하는 일",
+   "blocks": [
+    {
+     "type": "flow",
+     "caption": "매일 새벽 4시 스케줄러가 `review_reward_task` 시작. 보라색이 이 PR 이 바꾼 단계",
+     "steps": [
+      {
+       "title": "리뷰 집계 복사",
+       "lines": [
+        "어제 리뷰를 집계 DB에서 복사",
+        "새로 쓴 리뷰 연결"
+       ]
+      },
+      {
+       "title": "지급 조건 확인",
+       "lines": [
+        "리뷰마다 사진과 글자 수",
+        "삭제와 신고 여부"
+       ],
+       "changed": true
+      },
+      {
+       "title": "적립금 지급",
+       "lines": [
+        "리뷰 1건 500 (사진 1,000)",
+        "월 한도 초과면 지급 보류"
+       ],
+       "changed": true
+      },
+      {
+       "title": "보류 기록",
+       "lines": [
+        "조건 미달, 한도 초과, 신고",
+        "신고 리뷰는 회수 대기"
+       ],
+       "changed": true
+      },
+      {
+       "title": "알림",
+       "lines": [
+        "회원에게 적립 알림",
+        "운영 채널에 보류 목록"
+       ],
+       "changed": true
+      },
+      {
+       "title": "월 한도 갱신",
+       "lines": [
+        "이번 달 누적 적립액 갱신",
+        "매달 1일 초기화"
+       ]
+      }
+     ]
+    },
+    {
+     "type": "sequence",
+     "caption": "`review_reward_task` 한 번 실행 기준",
+     "diagrams": [
+      {
+       "title": "리뷰마다 지급",
+       "lanes": [
+        {
+         "key": "task",
+         "label": "배치 태스크",
+         "sub": "tasks.py"
+        },
+        {
+         "key": "svc",
+         "label": "RewardService",
+         "sub": "services.py"
+        },
+        {
+         "key": "point",
+         "label": "PointService",
+         "sub": "points.py"
+        },
+        {
+         "key": "db",
+         "label": "DB",
+         "sub": ""
+        }
+       ],
+       "steps": [
+        {
+         "kind": "loop_start",
+         "label": "리뷰마다 반복"
+        },
+        {
+         "kind": "msg",
+         "from": "task",
+         "to": "svc",
+         "label": "reward_review"
+        },
+        {
+         "kind": "msg",
+         "from": "svc",
+         "to": "db",
+         "label": "리뷰 조회",
+         "note": "::date 조건"
+        },
+        {
+         "kind": "msg",
+         "from": "svc",
+         "to": "point",
+         "label": "grant_by_review"
+        },
+        {
+         "kind": "msg",
+         "from": "point",
+         "to": "db",
+         "label": "잠금, 잔액 SUM 3번",
+         "hot": true
+        },
+        {
+         "kind": "msg",
+         "from": "point",
+         "to": "db",
+         "label": "중복 지급 확인",
+         "note": "JSON 전체 비교",
+         "hot": true
+        },
+        {
+         "kind": "msg",
+         "from": "svc",
+         "to": "db",
+         "label": "보류 기록 조회 후 저장"
+        },
+        {
+         "kind": "loop_end"
+        },
+        {
+         "kind": "self",
+         "at": "task",
+         "label": "알림 직접 발송"
+        }
+       ]
+      },
+      {
+       "title": "회원마다 지급",
+       "lanes": [
+        {
+         "key": "task",
+         "label": "배치 태스크",
+         "sub": "tasks.py"
+        },
+        {
+         "key": "svc",
+         "label": "RewardService",
+         "sub": "services.py"
+        },
+        {
+         "key": "point",
+         "label": "PointService",
+         "sub": "points.py"
+        },
+        {
+         "key": "db",
+         "label": "DB",
+         "sub": ""
+        }
+       ],
+       "steps": [
+        {
+         "kind": "msg",
+         "from": "task",
+         "to": "svc",
+         "label": "reward_reviews"
+        },
+        {
+         "kind": "msg",
+         "from": "svc",
+         "to": "db",
+         "label": "지급 대상 리뷰 조회",
+         "note": "1번, 범위 조건"
+        },
+        {
+         "kind": "loop_start",
+         "label": "회원마다 반복"
+        },
+        {
+         "kind": "msg",
+         "from": "svc",
+         "to": "point",
+         "label": "grant_reviews"
+        },
+        {
+         "kind": "msg",
+         "from": "point",
+         "to": "db",
+         "label": "잠금, 잔액 SUM 1번"
+        },
+        {
+         "kind": "msg",
+         "from": "point",
+         "to": "db",
+         "label": "지급 기록 묶음 조회"
+        },
+        {
+         "kind": "self",
+         "at": "point",
+         "label": "메모리에서 지급 계산"
+        },
+        {
+         "kind": "msg",
+         "from": "point",
+         "to": "db",
+         "label": "bulk INSERT"
+        },
+        {
+         "kind": "loop_end"
+        },
+        {
+         "kind": "self",
+         "at": "svc",
+         "label": "judge_review 판정"
+        },
+        {
+         "kind": "msg",
+         "from": "svc",
+         "to": "db",
+         "label": "보류 기록 일괄 생성"
+        },
+        {
+         "kind": "self",
+         "at": "task",
+         "label": "알림을 celery 태스크로 전달"
+        }
+       ]
+      }
+     ]
+    },
+    {
+     "type": "compare",
+     "lang": "python",
+     "before": {
+      "title": "리뷰마다 호출",
+      "code": "for review in reviews:\n    ...\n!   is_granted = PointService().grant_by_review(\n!       member=review.member,\n!       review=review,\n!       check_date=check_date,\n!   )"
+     },
+     "after": {
+      "title": "회원마다 호출",
+      "code": "for member, targets in targets_by_member_id.values():\n    grant_results.update(\n!       point_service.grant_reviews(\n!           member=member,\n!           reviews=targets,\n!           check_date=check_date,\n!       )\n    )"
+     },
+     "caption": "`targets` 는 조건을 통과한 리뷰, 회원 id 다음 리뷰 id 순"
+    }
+   ]
+  },
+  {
+   "heading": "관련 테이블",
+   "blocks": [
+    {
+     "type": "tables",
+     "tables": [
+      {
+       "key": "review",
+       "model": "Review",
+       "table": "shop_review",
+       "group": "리뷰",
+       "fields": [
+        {
+         "name": "id",
+         "badge": "PK"
+        },
+        {
+         "name": "member_id",
+         "badge": "FK",
+         "note": "→ member"
+        },
+        {
+         "name": "product_id",
+         "badge": "FK",
+         "note": "→ product"
+        },
+        {
+         "name": "body_length",
+         "note": "글자 수"
+        },
+        {
+         "name": "is_deleted · is_reported"
+        },
+        {
+         "name": "created_at",
+         "badge": "IDX",
+         "note": "어제 리뷰 범위 조건"
+        }
+       ],
+       "use": [
+        "어제 리뷰 1번 읽기"
+       ]
+      },
+      {
+       "key": "photo",
+       "model": "ReviewPhoto",
+       "table": "shop_reviewphoto",
+       "group": "리뷰",
+       "fields": [
+        {
+         "name": "id",
+         "badge": "PK"
+        },
+        {
+         "name": "review_id",
+         "badge": "FK",
+         "note": "리뷰"
+        },
+        {
+         "name": "image_url"
+        }
+       ],
+       "use": [
+        "사진 수 1번 집계"
+       ]
+      },
+      {
+       "key": "hold",
+       "model": "RewardHoldRecord",
+       "table": "shop_rewardholdrecord",
+       "group": "리뷰",
+       "changed": true,
+       "fields": [
+        {
+         "name": "id",
+         "badge": "PK"
+        },
+        {
+         "name": "review_id",
+         "badge": "FK",
+         "note": "리뷰"
+        },
+        {
+         "name": "hold_reason",
+         "note": "조건 미달, 한도 초과, 신고"
+        },
+        {
+         "name": "is_resolved"
+        }
+       ],
+       "use": [
+        "bulk_create 1번"
+       ]
+      },
+      {
+       "key": "daily",
+       "model": "ReviewDaily",
+       "table": "review_daily",
+       "group": "집계 DB",
+       "fields": [
+        {
+         "name": "id",
+         "badge": "PK"
+        },
+        {
+         "name": "review_code",
+         "note": "리뷰와 잇는 키"
+        },
+        {
+         "name": "summary_date"
+        }
+       ],
+       "use": [
+        "어제 날짜로 읽어",
+        "리뷰 표로 복사"
+       ]
+      },
+      {
+       "key": "wallet",
+       "model": "PointWallet",
+       "table": "point_pointwallet",
+       "group": "적립금",
+       "fields": [
+        {
+         "name": "id",
+         "badge": "PK"
+        },
+        {
+         "name": "member_id",
+         "badge": "FK",
+         "note": "→ member, 1:1"
+        },
+        {
+         "name": "monthly_granted",
+         "note": "이번 달 누적 적립액"
+        }
+       ],
+       "use": [
+        "회원마다 행 잠금",
+        "(SELECT ... FOR UPDATE)"
+       ]
+      },
+      {
+       "key": "grant",
+       "model": "PointGrantRecord",
+       "table": "point_pointgrantrecord",
+       "group": "적립금",
+       "changed": true,
+       "fields": [
+        {
+         "name": "id",
+         "badge": "PK"
+        },
+        {
+         "name": "wallet_id",
+         "badge": "FK"
+        },
+        {
+         "name": "policy_id",
+         "badge": "FK",
+         "note": "지급 기준"
+        },
+        {
+         "name": "related_data",
+         "badge": "IDX",
+         "note": "jsonb, 리뷰 id, check_date"
+        }
+       ],
+       "use": [
+        "오늘 지급 여부 IN 조회",
+        "bulk INSERT"
+       ]
+      },
+      {
+       "key": "ledger",
+       "model": "PointLedger",
+       "table": "point_pointledger",
+       "group": "적립금",
+       "changed": true,
+       "fields": [
+        {
+         "name": "id",
+         "badge": "PK"
+        },
+        {
+         "name": "member_id",
+         "badge": "FK",
+         "note": "→ member"
+        },
+        {
+         "name": "policy_id",
+         "badge": "FK",
+         "note": "지급 기준"
+        },
+        {
+         "name": "point_type",
+         "badge": "IDX",
+         "note": "적립, 사용, 소멸"
+        },
+        {
+         "name": "amount",
+         "note": "적립 +, 사용 -"
+        },
+        {
+         "name": "related_data",
+         "note": "jsonb, 리뷰 id"
+        }
+       ],
+       "use": [
+        "잔액 SUM 1번, bulk INSERT"
+       ]
+      },
+      {
+       "key": "policy",
+       "model": "RewardPolicy",
+       "table": "point_rewardpolicy",
+       "group": "적립금",
+       "fields": [
+        {
+         "name": "id",
+         "badge": "PK"
+        },
+        {
+         "name": "name",
+         "note": "text_review, photo_review"
+        },
+        {
+         "name": "amount",
+         "note": "500, 1,000"
+        }
+       ],
+       "use": [
+        "배치에서 1번 읽기"
+       ]
+      }
+     ],
+     "relations": [
+      {
+       "from": "photo",
+       "to": "review",
+       "kind": "fk",
+       "field": "review_id",
+       "to_field": "id"
+      },
+      {
+       "from": "hold",
+       "to": "review",
+       "kind": "fk",
+       "field": "review_id",
+       "to_field": "id"
+      },
+      {
+       "from": "daily",
+       "to": "review",
+       "kind": "copy",
+       "label": "매일 복사"
+      },
+      {
+       "from": "grant",
+       "to": "wallet",
+       "kind": "fk",
+       "field": "wallet_id",
+       "to_field": "id"
+      },
+      {
+       "from": "grant",
+       "to": "policy",
+       "kind": "fk",
+       "field": "policy_id",
+       "to_field": "id"
+      },
+      {
+       "from": "ledger",
+       "to": "policy",
+       "kind": "fk",
+       "field": "policy_id",
+       "to_field": "id"
+      },
+      {
+       "from": "grant",
+       "to": "review",
+       "kind": "json",
+       "field": "related_data",
+       "to_field": "id"
+      },
+      {
+       "from": "ledger",
+       "to": "review",
+       "kind": "json",
+       "field": "related_data",
+       "to_field": "id"
+      }
+     ],
+     "caption": "지급 기록과 원장은 리뷰를 FK 가 아니라 `related_data` JSON 키로 가리킴. 오늘 지급 여부 조회는 `idx_pgr_review_day` 인덱스 사용"
+    }
+   ]
+  },
+  {
+   "heading": "쿼리 비교",
+   "blocks": [
+    {
+     "type": "compare",
+     "lang": "sql",
+     "sql_source": "derived",
+     "before": {
+      "title": "중복 지급 확인",
+      "code": "-- 리뷰마다 1번\nSELECT ...\nFROM point_pointgrantrecord\nWHERE wallet_id = %s\n  AND policy_id = %s\n! AND related_data = '{\"review_id\": 1,\n!                     \"check_date\": \"2026-11-04\"}'"
+     },
+     "after": {
+      "title": "중복 지급 확인",
+      "code": "-- 회원마다 묶음당 1번 (100개부터 두 배씩)\nSELECT (related_data -> 'review_id')\nFROM point_pointgrantrecord\nWHERE wallet_id = %s\n  AND policy_id = %s\n! AND (related_data -> 'review_id') IN (%s, %s, ...)\n! AND (related_data -> 'check_date') = '\"2026-11-04\"'"
+     },
+     "caption": "키 조회는 0012 의 `idx_pgr_review_day` 표현식 인덱스 대상"
+    },
+    {
+     "type": "compare",
+     "lang": "sql",
+     "sql_source": "derived",
+     "before": {
+      "title": "PointWallet.get_balance",
+      "code": "-- 호출마다 3번, point_type 만 바꿔 실행\nSELECT SUM(amount)\nFROM point_pointledger\nWHERE member_id = %s\n! AND point_type = %s"
+     },
+     "after": {
+      "title": "PointWallet.get_balance",
+      "code": "-- 호출마다 1번\nSELECT\n! SUM(amount) FILTER (WHERE point_type = %s),\n! SUM(amount) FILTER (WHERE point_type = %s),\n! SUM(amount) FILTER (WHERE point_type = %s)\nFROM point_pointledger\nWHERE member_id = %s\n! AND point_type IN (%s, %s, %s)"
+     },
+     "caption": "배치에서는 리뷰마다 호출하던 것을 회원마다 1번 호출"
+    }
+   ]
+  },
+  {
+   "heading": "달라지는 동작",
+   "blocks": [
+    {
+     "type": "table",
+     "headers": [
+      "항목",
+      "이전",
+      "이후"
+     ],
+     "rows": [
+      [
+       "처리 순서",
+       "ORDER BY 없음",
+       "회원 id 다음 리뷰 id 순"
+      ],
+      [
+       "적립 알림",
+       "배치 안에서 발송",
+       "`send_reward_notification_task` 가 발송"
+      ],
+      [
+       "보류 목록 슬랙 보고",
+       "배치 안에서 발송",
+       "`send_reward_hold_alarm_task` 가 발송"
+      ],
+      [
+       "월 한도 초과",
+       "초과한 리뷰부터 지급 실패",
+       "회원 단위로 계산해 넘는 리뷰만 보류"
+      ],
+      [
+       "운영 서버가 아닌 환경의 슬랙 알림",
+       "실제 채널로 발송",
+       "발송 없음"
+      ]
+     ],
+     "caption": "지급액과 저장되는 행의 내용은 PR 본문 기준 동일"
+    },
+    {
+     "type": "callout",
+     "kind": "warn",
+     "text": "0012 마이그레이션은 `CREATE INDEX CONCURRENTLY` 를 씁니다. 배포 후 `pg_index.indisvalid` 로 `idx_pgr_review_day` 생성 여부를 확인합니다."
+    }
+   ]
+  },
+  {
+   "heading": "결과 동일 근거",
+   "blocks": [
+    {
+     "type": "table",
+     "headers": [
+      "테스트",
+      "확인하는 것"
+     ],
+     "rows": [
+      [
+       "`test_grant_reviews_matches_per_review_grant`",
+       "무작위 회원 40명에서 리뷰별 지급과 같은 지급 기록, 원장"
+      ],
+      [
+       "`test_get_balance_matches_sums_per_point_type`",
+       "조건부 SUM 결과와 유형별 합계의 일치"
+      ],
+      [
+       "`test_review_reward_task_results`",
+       "배치 한 번의 지급, 보류 기록, 알림 결과"
+      ],
+      [
+       "`test_query_count_does_not_grow_with_reviews`",
+       "리뷰 4개와 24개의 배치 쿼리 수 동일"
+      ]
+     ],
+     "caption": "PR 본문 기준 수정 전 코드의 쿼리 수는 리뷰 4개에서 70개, 24개에서 410개"
+    }
+   ]
+  },
+  {
+   "heading": "로컬 측정",
+   "blocks": [
+    {
+     "type": "bars",
+     "source": "PR 본문의 로컬 벤치마크 (합성 데이터, 회원 500명, 리뷰 6,000개)",
+     "items": [
+      {
+       "label": "전체",
+       "sub": "배치 1회",
+       "before": {
+        "value": 21.4,
+        "text": "21.4초"
+       },
+       "after": {
+        "value": 0.92,
+        "text": "0.92초"
+       }
+      },
+      {
+       "label": "DB 시간",
+       "sub": "배치 1회",
+       "before": {
+        "value": 16.8,
+        "text": "16.8초"
+       },
+       "after": {
+        "value": 0.38,
+        "text": "0.38초"
+       }
+      }
+     ]
+    }
+   ]
+  }
+ ],
+ "sources": [
+  {
+   "label": "지급 계산",
+   "text": "`apps/point/services.py`"
+  },
+  {
+   "label": "배치",
+   "text": "`apps/review/services.py`, `apps/review/tasks.py`"
+  },
+  {
+   "label": "테스트",
+   "text": "`tests/point/test_grant_reviews.py`, `tests/review/test_review_reward_task.py`"
+  }
+ ]
+}

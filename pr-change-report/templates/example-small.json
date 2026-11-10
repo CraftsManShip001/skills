@@ -1,0 +1,139 @@
+{
+ "title": "결제 승인 요청 타임아웃 25초",
+ "lead": "`PaymentClient.approve` 의 결제 대행사 응답 대기를 30초에서 25초로 낮추고 상수로 뺐습니다. ALB idle 30초보다 먼저 서버가 요청을 끝내게 합니다.",
+ "kpis": [
+  {
+   "label": "결제 승인 응답 대기",
+   "value": "30초 → 25초",
+   "note": "`payment_client.py`"
+  }
+ ],
+ "sections": [
+  {
+   "heading": "타임아웃 값",
+   "blocks": [
+    {
+     "type": "compare",
+     "lang": "python",
+     "before": {
+      "title": "숫자 직접 지정",
+      "code": "response = requests.post(\n    self.base_url + \"/v1/payments/approve\",\n    headers={...},\n    json=data,\n!    timeout=30,\n)"
+     },
+     "after": {
+      "title": "상수 사용",
+      "code": "!PAYMENT_APPROVE_TIMEOUT_SECONDS = 25\n\nresponse = requests.post(\n    self.base_url + \"/v1/payments/approve\",\n    headers={...},\n    json=data,\n!    timeout=PAYMENT_APPROVE_TIMEOUT_SECONDS,\n)"
+     },
+     "caption": "`PaymentClient.approve`"
+    },
+    {
+     "type": "table",
+     "headers": [
+      "구간",
+      "이전(초)",
+      "이후(초)",
+      "근거"
+     ],
+     "rows": [
+      [
+       "ALB idle",
+       "30",
+       "30",
+       "PR 본문"
+      ],
+      [
+       "nginx `proxy_read_timeout`",
+       "30",
+       "30",
+       "`deploy/nginx.conf`"
+      ],
+      [
+       "gunicorn `--timeout`",
+       "60",
+       "60",
+       "`deploy/gunicorn.sh`"
+      ],
+      [
+       "`PaymentClient.approve`",
+       "30",
+       "25",
+       "`payment_client.py`"
+      ],
+      [
+       "`refund`, `cancel`",
+       "15",
+       "15",
+       "`payment_client.py`"
+      ]
+     ],
+     "numeric": [
+      1,
+      2
+     ],
+     "highlight": [
+      3
+     ],
+     "caption": "요청 경로의 구간별 한도"
+    }
+   ]
+  },
+  {
+   "heading": "25초 초과 시 동작",
+   "blocks": [
+    {
+     "type": "table",
+     "headers": [
+      "호출처",
+      "`ReadTimeout` 처리"
+     ],
+     "rows": [
+      [
+       "`CheckoutService.pay`",
+       "`RequestException` 을 잡아 `payment_unknown`(결과 미확인) 반환"
+      ],
+      [
+       "`apps/orders/views.py` 호출 2곳",
+       "예외 처리 없이 그대로 전파"
+      ]
+     ],
+     "caption": "호출처 코드는 이 PR 에서 변경 없음"
+    },
+    {
+     "type": "table",
+     "headers": [
+      "테스트",
+      "확인하는 것"
+     ],
+     "rows": [
+      [
+       "`test_approve_timeout_is_below_alb_idle`",
+       "상수가 15 초과 30 미만"
+      ],
+      [
+       "`test_approve_uses_approve_timeout`",
+       "`requests.post` 에 상수 전달"
+      ],
+      [
+       "`test_refund_and_cancel_keep_previous_timeout`",
+       "`refund`, `cancel` 15초 유지"
+      ],
+      [
+       "`test_read_timeout_is_still_propagated`",
+       "`ReadTimeout` 이 클라이언트 밖으로 전파"
+      ]
+     ],
+     "caption": "타임아웃 외 동작이 같다는 근거"
+    }
+   ]
+  }
+ ],
+ "sources": [
+  {
+   "label": "코드",
+   "text": "`apps/payments/payment_client.py`"
+  },
+  {
+   "label": "테스트",
+   "text": "`tests/payments/test_approve_timeout.py`"
+  }
+ ]
+}
